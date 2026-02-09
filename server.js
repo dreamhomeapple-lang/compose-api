@@ -3,6 +3,11 @@ import multer from "multer";
 import sharp from "sharp";
 
 const app = express();
+
+/** ✅ 必须加：放在所有路由之前，让 req.body 不再是 undefined */
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+
 const upload = multer({ storage: multer.memoryStorage() });
 
 /**
@@ -30,7 +35,14 @@ app.post(
     try {
       const templateBuf = req.files?.template?.[0]?.buffer;
       const inputBuf = req.files?.input?.[0]?.buffer;
-      const config = JSON.parse(req.body.config || "{}");
+
+      /** ✅ 更稳：兼容 config 可能是 string / object / 不存在 */
+      let config = {};
+      if (typeof req.body?.config === "string" && req.body.config.trim()) {
+        config = JSON.parse(req.body.config);
+      } else if (req.body?.config && typeof req.body.config === "object") {
+        config = req.body.config;
+      }
 
       if (!templateBuf || !inputBuf) {
         return res.status(400).send("Missing template or input file");
