@@ -9,7 +9,7 @@ app.post(
       const templateBuf = req.files?.template?.[0]?.buffer;
       const inputBuf = req.files?.input?.[0]?.buffer;
 
-      // ✅ 兼容 config 可能是 string/object/不存在
+      // ✅ 兼容 config 可能是 string / object / 不存在
       let config = {};
       if (typeof req.body?.config === "string" && req.body.config.trim()) {
         config = JSON.parse(req.body.config);
@@ -21,31 +21,29 @@ app.post(
         return res.status(400).send("Missing template or input file");
       }
 
-      // ✅ 兼容两种字段名：replace_area（旧） 或 replacements（新）
-      // - replace_area: object OR array
-      // - replacements: array
+      // ✅ 兼容：replace_area 既可以是对象，也可以是数组
+      // 同时兼容你可能传的 replacements
       let areas = config.replace_area ?? config.replacements;
 
-      // ✅ 统一转成数组
       if (!areas) {
-        return res.status(400).send("Missing replace_area/replacements in config");
+        return res.status(400).send("Missing replace_area/replacements config");
       }
       if (!Array.isArray(areas)) areas = [areas];
 
-      // ✅ 校验每个区域
+      // ✅ 校验
       const isValidArea = (a) =>
         a &&
         [a.x, a.y, a.width, a.height].every((v) => typeof v === "number");
 
       if (areas.length === 0 || areas.some((a) => !isValidArea(a))) {
-        return res.status(400).send("Invalid replace_area/replacements config");
+        return res.status(400).send("Invalid replace_area config");
       }
 
-      // ✅ 兼容两种命名：fit_mode（旧） 或 fit（新）
+      // ✅ fit / padding（兼容 fit_mode / fit）
       const fitMode = config.fit_mode || config.fit || "contain";
       const padColor = config.pad_color || "#FFFFFF";
 
-      // ✅ 生成每个区域对应的 overlay（按区域尺寸单独处理 input）
+      // ✅ 为每个区域生成 overlay（同一张 input 图，按区域尺寸分别处理）
       const overlays = await Promise.all(
         areas.map(async (area) => {
           const processedInput =
@@ -70,7 +68,7 @@ app.post(
         })
       );
 
-      // ✅ 一次 composite 多个 overlay
+      // ✅ 一次性合成多个区域
       const output = await sharp(templateBuf)
         .composite(overlays)
         .png()
