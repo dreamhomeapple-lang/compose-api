@@ -4,33 +4,15 @@ import sharp from "sharp";
 
 const app = express();
 
-// ✅ 放在所有路由之前
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-/**
- * Health check
- */
-app.get("/health", (req, res) => res.send("ok"));
+app.get("/health", (req, res) => {
+  res.send("ok");
+});
 
-/**
- * POST /compose
- * 接收：
- *  - template (file)
- *  - input (file)
- *  - config (json string / object)
- *
- * config 支持：
- *  - replace_area: {x,y,width,height} 或 [{...},{...}]
- *  - replacements: [{...},{...}] （兼容用）
- *  - fit_mode: "cover" | "contain"
- *  - pad_color: "#FFFFFF"
- *
- * 返回：
- *  - image/png binary
- */
 app.post(
   "/compose",
   upload.fields([
@@ -43,58 +25,38 @@ app.post(
       const inputBuf = req.files?.input?.[0]?.buffer;
 
       if (!templateBuf || !inputBuf) {
-        console.log("❌ Missing files", {
-          hasTemplate: !!templateBuf,
-          hasInput: !!inputBuf,
-          fields: req.files ? Object.keys(req.files) : null
-        });
-        return res.status(400).send("Missing template or input file");
+        return res.status(400).send("Missing template or input");
       }
 
-      // ✅ 解析 config（string / object / 不存在都兼容）
       let config = {};
       if (typeof req.body?.config === "string" && req.body.config.trim()) {
-        try {
-          config = JSON.parse(req.body.config);
-        } catch (e) {
-          console.log("❌ JSON.parse(config) failed. Raw config string:", req.body.config);
-          return res.status(400).send("Invalid config JSON");
-        }
+        config = JSON.parse(req.body.config);
       } else if (req.body?.config && typeof req.body.config === "object") {
         config = req.body.config;
       }
 
-      // ✅ 支持 replace_area 或 replacements；支持单对象或数组
       let areas = config.replace_area ?? config.replacements;
-
       if (!areas) {
-        console.log("❌ Missing replace_area/replacements. Config:", config);
-        return res.status(400).send("Missing replace_area/replacements config");
+        return res.status(400).send("Missing replace_area");
       }
 
-      // 统一成数组
       if (!Array.isArray(areas)) areas = [areas];
 
-      // ✅ 校验每个区域
-      const isValidArea = (a) =>
+      const isValid = (a) =>
         a &&
-        [a.x, a.y, a.width, a.height].every((v) => typeof v === "number");
+        [a.x, a.y, a.width, a.height].every(v => typeof v === "number");
 
-      if (areas.length === 0 || areas.some((a) => !isValidArea(a))) {
-        console.log("❌ Invalid replace_area config");
-        console.log("areas (raw):", areas);
-        console.log("areas isArray:", Array.isArray(areas));
-        console.log("config:", config);
+      if (areas.some(a => !isValid(a))) {
+        console.log("Invalid areas:", areas);
         return res.status(400).send("Invalid replace_area config");
       }
 
-      const fitMode = config.fit_mode || config.fit || "contain"; // cover/contain
+      const fitMode = config.fit_mode || "contain";
       const padColor = config.pad_color || "#FFFFFF";
 
-      // ✅ 为每个区域生成 overlay（按区域尺寸分别处理 input）
       const overlays = await Promise.all(
         areas.map(async (area) => {
-          const processedInput =
+          const processed =
             fitMode === "cover"
               ? await sharp(inputBuf)
                   .resize(area.width, area.height, { fit: "cover" })
@@ -109,7 +71,7 @@ app.post(
                   .toBuffer();
 
           return {
-            input: processedInput,
+            input: processed,
             left: area.x,
             top: area.y
           };
@@ -122,16 +84,15 @@ app.post(
         .toBuffer();
 
       res.set("Content-Type", "image/png");
-      return res.send(output);
+      res.send(output);
     } catch (err) {
-      console.error("🔥 SERVER ERROR:", err);
-      return res.status(500).send(String(err));
+      console.error("SERVER ERROR:", err);
+      res.status(500).send(String(err));
     }
   }
 );
 
-// Render / 云平台会注入 PORT
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Compose API running on port ${PORT}`);
 });
