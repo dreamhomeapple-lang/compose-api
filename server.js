@@ -1,3 +1,36 @@
+import express from "express";
+import multer from "multer";
+import sharp from "sharp";
+
+const app = express();
+
+// ✅ 放在所有路由之前
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+/**
+ * Health check
+ */
+app.get("/health", (req, res) => res.send("ok"));
+
+/**
+ * POST /compose
+ * 接收：
+ *  - template (file)
+ *  - input (file)
+ *  - config (json string / object)
+ *
+ * config 支持：
+ *  - replace_area: {x,y,width,height} 或 [{...},{...}]
+ *  - replacements: [{...},{...}] （兼容用）
+ *  - fit_mode: "cover" | "contain"
+ *  - pad_color: "#FFFFFF"
+ *
+ * 返回：
+ *  - image/png binary
+ */
 app.post(
   "/compose",
   upload.fields([
@@ -9,41 +42,56 @@ app.post(
       const templateBuf = req.files?.template?.[0]?.buffer;
       const inputBuf = req.files?.input?.[0]?.buffer;
 
-      // ✅ 兼容 config 可能是 string / object / 不存在
+      if (!templateBuf || !inputBuf) {
+        console.log("❌ Missing files", {
+          hasTemplate: !!templateBuf,
+          hasInput: !!inputBuf,
+          fields: req.files ? Object.keys(req.files) : null
+        });
+        return res.status(400).send("Missing template or input file");
+      }
+
+      // ✅ 解析 config（string / object / 不存在都兼容）
       let config = {};
       if (typeof req.body?.config === "string" && req.body.config.trim()) {
-        config = JSON.parse(req.body.config);
+        try {
+          config = JSON.parse(req.body.config);
+        } catch (e) {
+          console.log("❌ JSON.parse(config) failed. Raw config string:", req.body.config);
+          return res.status(400).send("Invalid config JSON");
+        }
       } else if (req.body?.config && typeof req.body.config === "object") {
         config = req.body.config;
       }
 
-      if (!templateBuf || !inputBuf) {
-        return res.status(400).send("Missing template or input file");
-      }
-
-      // ✅ 兼容：replace_area 既可以是对象，也可以是数组
-      // 同时兼容你可能传的 replacements
+      // ✅ 支持 replace_area 或 replacements；支持单对象或数组
       let areas = config.replace_area ?? config.replacements;
 
       if (!areas) {
+        console.log("❌ Missing replace_area/replacements. Config:", config);
         return res.status(400).send("Missing replace_area/replacements config");
       }
+
+      // 统一成数组
       if (!Array.isArray(areas)) areas = [areas];
 
-      // ✅ 校验
+      // ✅ 校验每个区域
       const isValidArea = (a) =>
         a &&
         [a.x, a.y, a.width, a.height].every((v) => typeof v === "number");
 
       if (areas.length === 0 || areas.some((a) => !isValidArea(a))) {
+        console.log("❌ Invalid replace_area config");
+        console.log("areas (raw):", areas);
+        console.log("areas isArray:", Array.isArray(areas));
+        console.log("config:", config);
         return res.status(400).send("Invalid replace_area config");
       }
 
-      // ✅ fit / padding（兼容 fit_mode / fit）
-      const fitMode = config.fit_mode || config.fit || "contain";
+      const fitMode = config.fit_mode || config.fit || "contain"; // cover/contain
       const padColor = config.pad_color || "#FFFFFF";
 
-      // ✅ 为每个区域生成 overlay（同一张 input 图，按区域尺寸分别处理）
+      // ✅ 为每个区域生成 overlay（按区域尺寸分别处理 input）
       const overlays = await Promise.all(
         areas.map(async (area) => {
           const processedInput =
@@ -68,17 +116,22 @@ app.post(
         })
       );
 
-      // ✅ 一次性合成多个区域
       const output = await sharp(templateBuf)
         .composite(overlays)
         .png()
         .toBuffer();
 
       res.set("Content-Type", "image/png");
-      res.send(output);
+      return res.send(output);
     } catch (err) {
-      console.error(err);
-      res.status(500).send(String(err));
+      console.error("🔥 SERVER ERROR:", err);
+      return res.status(500).send(String(err));
     }
   }
 );
+
+// Render / 云平台会注入 PORT
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Compose API running on port ${PORT}`);
+});
