@@ -1,30 +1,3 @@
-import express from "express";
-import multer from "multer";
-import sharp from "sharp";
-
-const app = express();
-
-/** ✅ 必须加：放在所有路由之前，让 req.body 不再是 undefined */
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true, limit: "20mb" }));
-
-const upload = multer({ storage: multer.memoryStorage() });
-
-/**
- * Health check
- * 用于 Render / 浏览器测试服务是否存活
- */
-app.get("/health", (req, res) => res.send("ok"));
-
-/**
- * POST /compose
- * 接收：
- *  - template (binary)
- *  - input (binary)
- *  - config (json string)
- * 返回：
- *  - 合成后的 png
- */
 app.post(
   "/compose",
   upload.fields([
@@ -36,7 +9,7 @@ app.post(
       const templateBuf = req.files?.template?.[0]?.buffer;
       const inputBuf = req.files?.input?.[0]?.buffer;
 
-      /** ✅ 更稳：兼容 config 可能是 string / object / 不存在 */
+      // ✅ 兼容 config 可能是 string/object/不存在
       let config = {};
       if (typeof req.body?.config === "string" && req.body.config.trim()) {
         config = JSON.parse(req.body.config);
@@ -48,41 +21,58 @@ app.post(
         return res.status(400).send("Missing template or input file");
       }
 
-      const area = config.replace_area;
-      if (
-        !area ||
-        [area.x, area.y, area.width, area.height].some(v => typeof v !== "number")
-      ) {
-        return res.status(400).send("Invalid replace_area config");
+      // ✅ 兼容两种字段名：replace_area（旧） 或 replacements（新）
+      // - replace_area: object OR array
+      // - replacements: array
+      let areas = config.replace_area ?? config.replacements;
+
+      // ✅ 统一转成数组
+      if (!areas) {
+        return res.status(400).send("Missing replace_area/replacements in config");
+      }
+      if (!Array.isArray(areas)) areas = [areas];
+
+      // ✅ 校验每个区域
+      const isValidArea = (a) =>
+        a &&
+        [a.x, a.y, a.width, a.height].every((v) => typeof v === "number");
+
+      if (areas.length === 0 || areas.some((a) => !isValidArea(a))) {
+        return res.status(400).send("Invalid replace_area/replacements config");
       }
 
-      const fitMode = config.fit_mode || "contain";
+      // ✅ 兼容两种命名：fit_mode（旧） 或 fit（新）
+      const fitMode = config.fit_mode || config.fit || "contain";
       const padColor = config.pad_color || "#FFFFFF";
 
-      // 1️⃣ 将 input 图处理成目标区域尺寸
-      const processedInput =
-        fitMode === "cover"
-          ? await sharp(inputBuf)
-              .resize(area.width, area.height, { fit: "cover" })
-              .png()
-              .toBuffer()
-          : await sharp(inputBuf)
-              .resize(area.width, area.height, {
-                fit: "contain",
-                background: padColor
-              })
-              .png()
-              .toBuffer();
+      // ✅ 生成每个区域对应的 overlay（按区域尺寸单独处理 input）
+      const overlays = await Promise.all(
+        areas.map(async (area) => {
+          const processedInput =
+            fitMode === "cover"
+              ? await sharp(inputBuf)
+                  .resize(area.width, area.height, { fit: "cover" })
+                  .png()
+                  .toBuffer()
+              : await sharp(inputBuf)
+                  .resize(area.width, area.height, {
+                    fit: "contain",
+                    background: padColor
+                  })
+                  .png()
+                  .toBuffer();
 
-      // 2️⃣ 合成到 template 指定坐标
-      const output = await sharp(templateBuf)
-        .composite([
-          {
+          return {
             input: processedInput,
             left: area.x,
             top: area.y
-          }
-        ])
+          };
+        })
+      );
+
+      // ✅ 一次 composite 多个 overlay
+      const output = await sharp(templateBuf)
+        .composite(overlays)
         .png()
         .toBuffer();
 
@@ -94,9 +84,3 @@ app.post(
     }
   }
 );
-
-// Render / 云平台会注入 PORT
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Compose API running on port ${PORT}`);
-});
